@@ -84,13 +84,13 @@ function getRuntimeConfig(): RuntimeConfig {
   const env = process.env;
 
   return {
-    port: cli.port ?? parsePositiveInteger(env.PORT ?? "37777", "PORT"),
-    pin: cli.pin ?? env.PIN ?? generatePin(),
-    fps: cli.fps ?? parsePositiveInteger(env.FPS ?? "30", "FPS"),
-    videoBitrate: cli.videoBitrate ?? env.VIDEO_BITRATE ?? "14M",
-    useHwaccel: cli.useHwaccel ?? env.USE_HWACCEL === "1",
-    source: cli.source ?? parseSourceMode(env.SOURCE ?? "screen"),
-    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.RTP_PORT ?? "5004", "RTP_PORT")
+    port: cli.port ?? parsePositiveInteger(env.CASTY_PORT ?? "37777", "CASTY_PORT"),
+    pin: cli.pin ?? env.CASTY_PIN ?? generatePin(),
+    fps: cli.fps ?? parsePositiveInteger(env.CASTY_FPS ?? "30", "CASTY_FPS"),
+    videoBitrate: cli.videoBitrate ?? env.CASTY_VIDEO_BITRATE ?? "14M",
+    useHwaccel: cli.useHwaccel ?? env.CASTY_USE_HWACCEL === "1",
+    source: cli.source ?? parseSourceMode(env.CASTY_SOURCE ?? "screen"),
+    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.CASTY_RTP_PORT ?? "5004", "CASTY_RTP_PORT")
   };
 }
 
@@ -337,7 +337,7 @@ function buildCaptureConfig(): CaptureConfig {
   }
 
   if (currentPlatform === "linux") {
-    const display = process.env.DISPLAY ?? ":0.0";
+    const display = process.env.CASTY_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
     return {
       source: `Linux x11grab ${display}`,
       ffmpegInputArgs: ["-f", "x11grab", "-framerate", String(FPS), "-i", display]
@@ -884,11 +884,6 @@ function watchPage(): string {
       text-transform: uppercase;
       padding: .47rem .72rem;
       cursor: pointer;
-      transition: background-color .15s ease, color .15s ease;
-    }
-    .action:hover {
-      background: #050505;
-      color: var(--ink);
     }
     .viewport {
       width: 100vw;
@@ -903,6 +898,16 @@ function watchPage(): string {
       object-fit: contain;
       border-top: 1px solid #000;
       border-left: 1px solid #000;
+      pointer-events: none;
+    }
+    .is-fullscreen .chrome {
+      display: none;
+    }
+    .is-fullscreen .viewport {
+      padding-top: 0;
+    }
+    .is-fullscreen video {
+      height: 100vh;
     }
     @keyframes pulse {
       0%, 100% { opacity: .4; }
@@ -948,7 +953,7 @@ function watchPage(): string {
       </div>
     </header>
     <section class="viewport">
-      <video id="video" autoplay playsinline muted></video>
+      <video id="video" autoplay playsinline muted tabindex="-1"></video>
     </section>
   </main>
 
@@ -1066,16 +1071,39 @@ function watchPage(): string {
       await pc.setRemoteDescription(answer);
     };
 
-    const requestFullscreen = () => {
-      if (document.fullscreenElement) return;
-      if (video.requestFullscreen) {
-        video.requestFullscreen().catch(() => {});
+    const toggleFullscreen = async () => {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+        return;
+      }
+
+      const target = document.documentElement;
+      if (target.requestFullscreen) {
+        await target.requestFullscreen();
       }
     };
 
-    fullscreenBtn.addEventListener("click", requestFullscreen);
-    document.addEventListener("pointerdown", requestFullscreen, { once: true });
-    document.addEventListener("keydown", requestFullscreen, { once: true });
+    const syncFullscreenButton = () => {
+      const isFullscreen = Boolean(document.fullscreenElement);
+      fullscreenBtn.textContent = isFullscreen
+        ? "Exit Fullscreen"
+        : "Fullscreen";
+      document.body.classList.toggle("is-fullscreen", isFullscreen);
+    };
+
+    fullscreenBtn.addEventListener("click", () => {
+      toggleFullscreen().catch(() => {});
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "f" && event.key !== "F") return;
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      event.preventDefault();
+      toggleFullscreen().catch(() => {});
+    });
+
+    document.addEventListener("fullscreenchange", syncFullscreenButton);
+    syncFullscreenButton();
 
     connect().catch((err) => {
       console.error(err);

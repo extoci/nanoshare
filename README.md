@@ -1,68 +1,104 @@
-# casty
+# casty – local screen sharing, as simple as it gets
 
-One-process screen broadcaster:
-- Captures your screen with FFmpeg (host runs natively, no host browser needed).
-- Publishes a low-latency WebRTC H.264 stream to browser viewers on your local network.
-- Protects access behind a 6-digit PIN.
+you shouldn't have to mess with vnc, rdp or ssh to view your laptop's screen on your computer (or any other device on your network).
 
-## Requirements
+## usage
 
-- [Bun](https://bun.sh)
-- FFmpeg available on `PATH`
-  - macOS: `brew install ffmpeg`
-  - Windows: install FFmpeg and add `ffmpeg.exe` to `PATH`
-
-## Run
+run casty using [bun](https://bun.com):
 
 ```bash
-bun install
-bun run dev
+bunx casty
 ```
 
-Optional env vars:
-- `PORT` (default `37777`)
-- `PIN` (default random 6-digit)
-- `FPS` (default `30`)
-- `VIDEO_BITRATE` (default `14M`)
-- `RTP_PORT` (default `5004`; local UDP ingress from FFmpeg into WebRTC)
-- `USE_HWACCEL=1` (macOS only, enables `h264_videotoolbox`; default is reliability-first `libx264`)
-- `SOURCE=testsrc` (debug mode; uses FFmpeg test pattern instead of screen capture)
+macos will ask for permission to access your screen, and you might have to restart your terminal before the permission is granted by the os.
 
-CLI flags are also supported (flags take precedence over env vars):
-- `--port <number>`
-- `--pin <pin>`
-- `--fps <number>`
-- `--video-bitrate <bitrate>`
-- `--use-hwaccel`
-- `--source <screen|testsrc>`
-- `--rtp-port <number>`
+this will obviously require bun.
 
-Example:
+## requirements
+
+- [bun](https://bun.com) installed
+- `ffmpeg` installed and available in your `PATH`
+- host and viewer on the same network
+- screen-recording permission granted to terminal (macos)
+
+## features
+
+`casty` runs on port `37777` by default, at **30fps** with **14M** video bitrate. you can change settings by passing flags when running `bunx casty`.
+
+- `--port <number>` – change the port to listen on
+- `--fps <number>` – change the framerate
+- `--video-bitrate <bitrate>` – change the video bitrate
+- `--use-hwaccel` – enable hardware acceleration on macOS
+- `--source <screen|testsrc>` – use a test pattern or screen capture
+- `--rtp-port <number>` – change the local port for ffmpeg → webrtc ingress
+- `--pin <pin>` – change the pin to require to access the live stream
+
+## quick examples
+
+default:
 
 ```bash
-bun dev --fps 60 --video-bitrate 20M
+bunx casty
 ```
 
-## Build Standalone Executable
-
-Local platform:
+custom port + pin:
 
 ```bash
-bun run build:local
+bunx casty --port 3000 --pin 123456
 ```
 
-Cross-target builds:
+use a test source (great for debugging without sharing your actual screen):
 
 ```bash
-bun run build:mac
-bun run build:win
+bunx casty --source testsrc
 ```
 
-Outputs go to `dist/`.
+macos hardware encoding:
 
-## Notes
+```bash
+bunx casty --use-hwaccel
+```
 
-- A single binary cannot run on both macOS and Windows. You get one executable per OS target.
-- On first run, macOS will ask for Screen Recording permission.
-- This mode targets near-realtime LAN playback (typically sub-second to low-single-digit seconds depending on network + browser buffering).
-- After PIN entry, the viewer page is video-only (no playback controls/UI chrome).
+## environment variables
+
+if you prefer env vars over cli flags:
+
+- `CASTY_PORT` (default: `37777`)
+- `CASTY_PIN` (default: random 6-digit pin)
+- `CASTY_FPS` (default: `30`)
+- `CASTY_VIDEO_BITRATE` (default: `14M`)
+- `CASTY_USE_HWACCEL=1` to enable hw acceleration on macos
+- `CASTY_SOURCE=screen|testsrc` (default: `screen`)
+- `CASTY_RTP_PORT` (default: `5004`)
+- `CASTY_DISPLAY` (linux only, optional override for X11 display)
+
+example:
+
+```bash
+CASTY_PORT=3000 CASTY_FPS=60 CASTY_VIDEO_BITRATE=8M bunx casty
+```
+
+## what you'll see
+
+when casty starts, it prints:
+
+- local url (for same machine)
+- lan url (for other devices on your network)
+- a 6-digit pin
+
+open the url on another device, enter the pin once, and you're in.
+
+## troubleshooting
+
+- `ffmpeg: command not found`  
+  install ffmpeg first (`brew install ffmpeg`, `sudo apt install ffmpeg`, etc). on windows, have it in your `PATH`.
+- macos keeps denying capture  
+  enable your terminal in system settings → privacy & security → screen recording, then fully restart your terminal.
+- viewer can't connect  
+  make sure both devices are on the same lan and your firewall allows the selected port. if the port is in use, try passing a different one with `--port <number>`.
+- linux black screen  
+  check that `CASTY_DISPLAY` (or system `DISPLAY`) is set correctly (for example `:0.0`).
+
+## acknowledgements
+
+built by [exotic](https://x.com/ex0t1clol) with gpt-5.3-codex in a couple hours. feel free to contribute if you want, or fork and improve.
