@@ -2,7 +2,7 @@
 
 One-process screen broadcaster:
 - Captures your screen with FFmpeg.
-- Serves a live HLS stream over your local network.
+- Serves a low-latency live stream over WebSocket + MPEG-TS on your local network.
 - Protects access behind a 6-digit PIN.
 
 ## Requirements
@@ -23,9 +23,7 @@ Optional env vars:
 - `PORT` (default `37777`)
 - `PIN` (default random 6-digit)
 - `FPS` (default `30`)
-- `VIDEO_BITRATE` (default `12M`)
-- `HLS_TIME` (default `1`)
-- `HLS_LIST_SIZE` (default `6`)
+- `VIDEO_BITRATE` (default `14M`)
 - `USE_HWACCEL=1` (macOS only, enables `h264_videotoolbox`; default is reliability-first `libx264`)
 - `SOURCE=testsrc` (debug mode; uses FFmpeg test pattern instead of screen capture)
 
@@ -50,3 +48,4 @@ Outputs go to `dist/`.
 
 - A single binary cannot run on both macOS and Windows. You get one executable per OS target.
 - On first run, macOS will ask for Screen Recording permission.
+- This mode targets near-realtime LAN playback (typically under ~1.5s latency on stable networks).

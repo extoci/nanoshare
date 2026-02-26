@@ -1,10 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { networkInterfaces, platform, tmpdir } from "node:os";
-import { join } from "node:path";
+import { networkInterfaces, platform } from "node:os";
 import { randomBytes } from "node:crypto";
-import hlsScript from "hls.js/dist/hls.min.js" with { type: "text" };
+import mpegtsRuntime from "mpegts.js/dist/mpegts.js" with { type: "text" };
 
 type CaptureConfig = {
   ffmpegInputArgs: string[];
@@ -12,23 +9,18 @@ type CaptureConfig = {
 };
 
 type SessionStore = Map<string, number>;
+type LiveSocket = Bun.ServerWebSocket<{ sessionId: string }>;
 
 const PORT = Number(process.env.PORT ?? 37777);
 const PIN = process.env.PIN ?? generatePin();
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const FPS = Number(process.env.FPS ?? 30);
-const VIDEO_BITRATE = process.env.VIDEO_BITRATE ?? "12M";
-const LIST_SIZE = Number(process.env.HLS_LIST_SIZE ?? 6);
-const HLS_TIME = Number(process.env.HLS_TIME ?? 1);
+const VIDEO_BITRATE = process.env.VIDEO_BITRATE ?? "14M";
 const USE_HWACCEL = process.env.USE_HWACCEL === "1";
 const SOURCE = process.env.SOURCE ?? "screen";
 
-const streamId = randomBytes(6).toString("hex");
-const hlsPrefix = `/hls/${streamId}/`;
-const streamDir = mkdtempSync(join(tmpdir(), "lan-screenshare-"));
-const playlistPath = join(streamDir, "live.m3u8");
-const segmentPattern = join(streamDir, "seg_%05d.ts");
 const sessions: SessionStore = new Map();
+const liveSockets = new Set<LiveSocket>();
 
 let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 let ffmpegLogs = "";
@@ -67,20 +59,24 @@ function createSession(): { id: string; expiresAt: number } {
   return { id, expiresAt };
 }
 
-function isAuthorized(req: Request): boolean {
+function getValidSessionId(req: Request): string | null {
   const cookie = req.headers.get("cookie") ?? "";
   const sessionId = parseCookies(cookie).get("screenshare_session");
-  if (!sessionId) return false;
+  if (!sessionId) return null;
 
   const expiresAt = sessions.get(sessionId);
-  if (!expiresAt) return false;
+  if (!expiresAt) return null;
 
   if (Date.now() > expiresAt) {
     sessions.delete(sessionId);
-    return false;
+    return null;
   }
 
-  return true;
+  return sessionId;
+}
+
+function isAuthorized(req: Request): boolean {
+  return getValidSessionId(req) !== null;
 }
 
 function cleanupExpiredSessions(): void {
@@ -229,7 +225,9 @@ function buildCodecArgs(): string[] {
       "-maxrate",
       VIDEO_BITRATE,
       "-bufsize",
-      "24M",
+      "28M",
+      "-g",
+      String(FPS * 2),
       "-pix_fmt",
       "yuv420p"
     ];
@@ -249,11 +247,13 @@ function buildCodecArgs(): string[] {
     "-maxrate",
     VIDEO_BITRATE,
     "-bufsize",
-    "24M",
+    "28M",
     "-g",
     String(FPS * 2),
     "-keyint_min",
     String(FPS * 2),
+    "-bf",
+    "0",
     "-sc_threshold",
     "0",
     "-pix_fmt",
@@ -261,7 +261,17 @@ function buildCodecArgs(): string[] {
   ];
 }
 
-function startFfmpegCapture(): void {
+function broadcastChunk(chunk: Buffer): void {
+  for (const ws of liveSockets) {
+    try {
+      ws.send(chunk);
+    } catch {
+      liveSockets.delete(ws);
+    }
+  }
+}
+
+function startFfmpegCapture(): Promise<void> {
   const capture = buildCaptureConfig();
   const codecArgs = buildCodecArgs();
 
@@ -279,21 +289,23 @@ function startFfmpegCapture(): void {
     "-fps_mode",
     "cfr",
     "-f",
-    "hls",
-    "-hls_time",
-    String(HLS_TIME),
-    "-hls_list_size",
-    String(LIST_SIZE),
-    "-hls_flags",
-    "delete_segments+append_list+independent_segments+omit_endlist",
-    "-hls_segment_filename",
-    segmentPattern,
-    playlistPath
+    "mpegts",
+    "-flush_packets",
+    "1",
+    "-muxdelay",
+    "0",
+    "-muxpreload",
+    "0",
+    "pipe:1"
   ];
 
   ffmpegProcess = spawn("ffmpeg", args, {
-    stdio: ["ignore", "ignore", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"]
   });
+
+  if (!ffmpegProcess.stdout) {
+    throw new Error("Failed to open FFmpeg stdout pipe.");
+  }
 
   if (ffmpegProcess.stderr) {
     ffmpegProcess.stderr.setEncoding("utf8");
@@ -302,27 +314,52 @@ function startFfmpegCapture(): void {
     });
   }
 
-  ffmpegProcess.on("exit", (code, signal) => {
-    if (code === 0 || signal === "SIGTERM") return;
-    console.error("FFmpeg exited unexpectedly.");
-    console.error(`Exit code: ${code} signal: ${signal ?? "none"}`);
-    if (ffmpegLogs.trim()) {
-      console.error("Recent FFmpeg logs:\n", ffmpegLogs);
-    }
-    process.exit(1);
-  });
-
   console.log(`Capture source: ${capture.source}`);
-}
 
-async function waitForPlaylist(timeoutMs: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    if (existsSync(playlistPath)) return;
-    await Bun.sleep(150);
-  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
 
-  throw new Error(`Timed out waiting for stream to start after ${timeoutMs}ms.`);
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    };
+
+    ffmpegProcess?.stdout?.on("data", (chunk: Buffer) => {
+      if (!settled) resolveOnce();
+      broadcastChunk(chunk);
+    });
+
+    ffmpegProcess?.on("exit", (code, signal) => {
+      const abnormal = !(code === 0 || signal === "SIGTERM" || signal === "SIGKILL");
+
+      if (!settled) {
+        rejectOnce(new Error("FFmpeg exited before stream became ready."));
+        return;
+      }
+
+      if (abnormal) {
+        console.error("FFmpeg exited unexpectedly.");
+        console.error(`Exit code: ${code} signal: ${signal ?? "none"}`);
+        if (ffmpegLogs.trim()) {
+          console.error("Recent FFmpeg logs:\n", ffmpegLogs);
+        }
+        process.exit(1);
+      }
+    });
+
+    const timeout = setTimeout(() => {
+      rejectOnce(new Error("Timed out waiting for realtime stream packets."));
+    }, 20_000);
+  });
 }
 
 function stopEverything(): void {
@@ -333,7 +370,15 @@ function stopEverything(): void {
       // ignore
     }
   }
-  rmSync(streamDir, { recursive: true, force: true });
+
+  for (const ws of liveSockets) {
+    try {
+      ws.close();
+    } catch {
+      // ignore
+    }
+  }
+  liveSockets.clear();
 }
 
 function loginPage(errorText?: string): string {
@@ -457,22 +502,22 @@ function loginPage(errorText?: string): string {
 </head>
 <body>
   <main class="panel">
-    <div class="badge">LAN Secure Stream</div>
+    <div class="badge">LAN Realtime Stream</div>
     <h1>Enter Access PIN</h1>
     <p>Use the 6-digit code shown on the host machine to unlock this local stream.</p>
     ${errorBanner}
     <form method="post" action="/auth">
       <label for="pin">PIN</label>
       <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required autofocus />
-      <button type="submit">Open Stream</button>
+      <button type="submit">Open Live View</button>
     </form>
-    <div class="hint">Tip: this works on phones, tablets, and laptops in the same network.</div>
+    <div class="hint">Low-latency LAN mode is tuned for near-realtime playback.</div>
   </main>
 </body>
 </html>`;
 }
 
-function watchPage(streamPath: string): string {
+function watchPage(): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -487,6 +532,8 @@ function watchPage(streamPath: string): string {
       --ink: #eff5f8;
       --muted: #9ab0bd;
       --accent: #7fdbbe;
+      --warn: #ffd6a0;
+      --err: #ffb0b0;
     }
     * { box-sizing: border-box; }
     body {
@@ -526,90 +573,151 @@ function watchPage(streamPath: string): string {
       padding: .8rem;
       display: grid;
       place-items: center;
+      align-content: center;
     }
     video {
       width: 100%;
-      max-height: calc(100dvh - 85px);
+      max-height: calc(100dvh - 130px);
       background: #000;
       border: 1px solid var(--line);
       border-radius: 14px;
       box-shadow: 0 20px 55px #00000066;
     }
     .error {
-      color: #ffb0b0;
+      color: var(--err);
       font-size: .9rem;
       text-align: center;
-      margin-top: .9rem;
+      margin-top: .75rem;
+      min-height: 1.2rem;
+    }
+    .note {
+      color: var(--warn);
+      opacity: .9;
+      margin-top: .4rem;
+      font-size: .8rem;
+      text-align: center;
     }
   </style>
-  <script type="module">
-    const streamUrl = ${JSON.stringify(streamPath)};
-    const video = document.getElementById("video");
-    const status = document.getElementById("status");
-    const error = document.getElementById("error");
-
-    const setStatus = (text) => { status.textContent = text; };
-    const setError = (text) => { error.textContent = text; };
-
-    async function boot() {
-      if (video.canPlayType("application/vnd.apple.mpegurl")) {
-        video.src = streamUrl;
-        setStatus("Live");
-        return;
-      }
-
-      await new Promise((resolve, reject) => {
-        const existing = document.querySelector('script[data-hls="1"]');
-        if (existing) return resolve();
-        const script = document.createElement("script");
-        script.src = "/assets/hls.js";
-        script.dataset.hls = "1";
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("Failed to load HLS runtime"));
-        document.head.appendChild(script);
-      });
-
-      const Hls = window.Hls;
-      if (!Hls || !Hls.isSupported()) {
-        setStatus("Unsupported");
-        setError("This browser cannot play HLS. Try Safari or a modern Chromium browser.");
-        return;
-      }
-
-      const hls = new Hls({
-        maxLiveSyncPlaybackRate: 1.2,
-        liveSyncDurationCount: 2,
-        liveMaxLatencyDurationCount: 6
-      });
-      hls.loadSource(streamUrl);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.MANIFEST_PARSED, () => setStatus("Live"));
-      hls.on(Hls.Events.ERROR, (_, data) => {
-        if (data?.fatal) {
-          setStatus("Recovering");
-          setError("Stream hiccup detected. Reconnecting...");
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
-          else window.location.reload();
-        }
-      });
-    }
-
-    boot().catch((e) => {
-      setStatus("Error");
-      setError(String(e));
-    });
-  </script>
 </head>
 <body>
   <header>
     <div class="title">LAN Screen Share</div>
-    <div class="status" id="status">Loading...</div>
+    <div class="status" id="status">Connecting...</div>
   </header>
   <main class="frame">
     <video id="video" controls autoplay playsinline muted></video>
     <div id="error" class="error"></div>
+    <div class="note">Expected latency: typically under 1.5s on stable LAN.</div>
   </main>
+
+  <script>
+    const video = document.getElementById("video");
+    const status = document.getElementById("status");
+    const error = document.getElementById("error");
+
+    const setStatus = (text, tone = "ok") => {
+      status.textContent = text;
+      status.style.color = tone === "error" ? "#ffb0b0" : tone === "warn" ? "#ffd6a0" : "#7fdbbe";
+    };
+
+    const setError = (text) => {
+      error.textContent = text;
+    };
+
+    const loadScript = (src) =>
+      new Promise((resolve, reject) => {
+        const existing = document.querySelector('script[data-mpegts="1"]');
+        if (existing) return resolve();
+        const script = document.createElement("script");
+        script.src = src;
+        script.dataset.mpegts = "1";
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load MPEGTS runtime"));
+        document.head.appendChild(script);
+      });
+
+    let player = null;
+    let reconnectTimer = null;
+
+    const cleanupPlayer = () => {
+      if (!player) return;
+      try {
+        player.unload();
+      } catch {}
+      try {
+        player.detachMediaElement();
+      } catch {}
+      try {
+        player.destroy();
+      } catch {}
+      player = null;
+    };
+
+    const wsUrl = () => {
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      return proto + "://" + location.host + "/live/ws";
+    };
+
+    const connect = async () => {
+      clearTimeout(reconnectTimer);
+      setError("");
+      setStatus("Connecting...");
+
+      await loadScript("/assets/mpegts.js");
+      const mpegts = window.mpegts;
+      if (!mpegts || !mpegts.isSupported()) {
+        setStatus("Unsupported", "error");
+        setError("This browser cannot run realtime MPEG-TS playback.");
+        return;
+      }
+
+      cleanupPlayer();
+
+      player = mpegts.createPlayer(
+        {
+          type: "mpegts",
+          isLive: true,
+          url: wsUrl()
+        },
+        {
+          enableWorker: true,
+          lazyLoad: false,
+          autoCleanupSourceBuffer: true,
+          liveBufferLatencyChasing: true,
+          liveBufferLatencyMaxLatency: 1.0,
+          liveBufferLatencyMinRemain: 0.2,
+          stashInitialSize: 64
+        }
+      );
+
+      player.attachMediaElement(video);
+      player.load();
+      video.play().catch(() => {});
+      setStatus("Live", "ok");
+
+      player.on(mpegts.Events.ERROR, (_type, detail) => {
+        setStatus("Reconnecting...", "warn");
+        setError("Playback error: " + String(detail || "unknown"));
+        cleanupPlayer();
+        reconnectTimer = setTimeout(() => {
+          connect().catch((err) => {
+            setStatus("Error", "error");
+            setError(String(err));
+          });
+        }, 700);
+      });
+    };
+
+    connect().catch((err) => {
+      setStatus("Error", "error");
+      setError(String(err));
+    });
+
+    window.addEventListener("beforeunload", () => {
+      clearTimeout(reconnectTimer);
+      cleanupPlayer();
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -642,52 +750,8 @@ function redirect(path: string): Response {
   });
 }
 
-function routeStreamAsset(pathname: string, req: Request): Promise<Response> | Response {
-  if (!isAuthorized(req)) return unauthorized();
-  const fileName = pathname.slice(hlsPrefix.length);
-  if (!fileName || !/^[a-zA-Z0-9._-]+$/.test(fileName)) {
-    return new Response("Not found", { status: 404 });
-  }
-
-  const fullPath = join(streamDir, fileName);
-  if (!existsSync(fullPath)) return new Response("Not ready", { status: 503 });
-
-  if (fileName.endsWith(".m3u8")) {
-    return readFile(fullPath, "utf8").then((playlist) => {
-      const fixed = playlist
-        .split("\n")
-        .map((line) => {
-          if (line.startsWith("#") || !line.trim()) return line;
-          return `${hlsPrefix}${line}`;
-        })
-        .join("\n");
-
-      return new Response(fixed, {
-        status: 200,
-        headers: {
-          "content-type": "application/vnd.apple.mpegurl; charset=utf-8",
-          "cache-control": "no-store"
-        }
-      });
-    });
-  }
-
-  if (fileName.endsWith(".ts")) {
-    return new Response(Bun.file(fullPath), {
-      status: 200,
-      headers: {
-        "content-type": "video/mp2t",
-        "cache-control": "no-store"
-      }
-    });
-  }
-
-  return new Response("Unsupported", { status: 415 });
-}
-
 async function main(): Promise<void> {
-  startFfmpegCapture();
-  await waitForPlaylist(20000);
+  await startFfmpegCapture();
 
   const lanIp = getLanIp();
   const publicUrl = `http://${lanIp}:${PORT}/`;
@@ -695,10 +759,10 @@ async function main(): Promise<void> {
 
   setInterval(cleanupExpiredSessions, 60_000).unref();
 
-  const server = Bun.serve({
+  const server = Bun.serve<{ sessionId: string }>({
     hostname: "0.0.0.0",
     port: PORT,
-    fetch: async (req: Request) => {
+    fetch: async (req: Request, srv) => {
       const url = new URL(req.url);
       const { pathname } = url;
 
@@ -706,8 +770,8 @@ async function main(): Promise<void> {
         return new Response("ok", { status: 200 });
       }
 
-      if (pathname === "/assets/hls.js") {
-        return new Response(hlsScript, {
+      if (pathname === "/assets/mpegts.js") {
+        return new Response(mpegtsRuntime, {
           status: 200,
           headers: {
             "content-type": "text/javascript; charset=utf-8",
@@ -738,14 +802,36 @@ async function main(): Promise<void> {
 
       if (pathname === "/watch") {
         if (!isAuthorized(req)) return redirect("/");
-        return html(watchPage(`${hlsPrefix}live.m3u8`));
+        return html(watchPage());
       }
 
-      if (pathname.startsWith(hlsPrefix)) {
-        return routeStreamAsset(pathname, req);
+      if (pathname === "/live/ws") {
+        const sessionId = getValidSessionId(req);
+        if (!sessionId) return unauthorized();
+
+        if (srv.upgrade(req, { data: { sessionId } })) {
+          return;
+        }
+
+        return new Response("WebSocket upgrade failed", { status: 500 });
       }
 
       return new Response("Not found", { status: 404 });
+    },
+    websocket: {
+      open(ws: LiveSocket) {
+        if (!sessions.has(ws.data.sessionId)) {
+          ws.close();
+          return;
+        }
+        liveSockets.add(ws);
+      },
+      message() {
+        // viewer sockets are receive-only
+      },
+      close(ws: LiveSocket) {
+        liveSockets.delete(ws);
+      }
     }
   });
 
@@ -759,11 +845,12 @@ async function main(): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  console.log("\nLAN Screen Share is live");
-  console.log("------------------------");
+  console.log("\nLAN Screen Share (Realtime) is live");
+  console.log("---------------------------------");
   console.log(`Viewer URL (LAN):  ${publicUrl}`);
   console.log(`Viewer URL (local): ${localUrl}`);
   console.log(`PIN: ${PIN}`);
+  console.log(`FPS: ${FPS} | Bitrate: ${VIDEO_BITRATE}`);
   console.log("\nPress Ctrl+C to stop.\n");
 }
 

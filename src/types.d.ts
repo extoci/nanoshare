@@ -1,4 +1,4 @@
-declare module "hls.js/dist/hls.min.js" {
+declare module "mpegts.js/dist/mpegts.js" {
   const source: string;
   export default source;
 }
