@@ -1,0 +1,18 @@
+{
+  "name": "lan-screenshare",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build:local": "bun build --compile --minify --outfile dist/screenshare ./src/index.ts",
+    "build:mac": "bun build --compile --minify --target=bun-darwin-arm64 --outfile dist/screenshare-macos ./src/index.ts",
+    "build:win": "bun build --compile --minify --target=bun-windows-x64 --outfile dist/screenshare-windows.exe ./src/index.ts"
+  },
+  "dependencies": {
+    "hls.js": "^1.6.13"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.3"
+  }
+}
