@@ -1,8 +1,8 @@
 # LAN Screen Share
 
 One-process screen broadcaster:
-- Captures your screen with FFmpeg.
-- Serves a low-latency live stream over WebSocket + MPEG-TS on your local network.
+- Captures your screen with FFmpeg (host runs natively, no host browser needed).
+- Publishes a low-latency WebRTC H.264 stream to browser viewers on your local network.
 - Protects access behind a 6-digit PIN.
 
 ## Requirements
@@ -24,6 +24,7 @@ Optional env vars:
 - `PIN` (default random 6-digit)
 - `FPS` (default `30`)
 - `VIDEO_BITRATE` (default `14M`)
+- `RTP_PORT` (default `5004`; local UDP ingress from FFmpeg into WebRTC)
 - `USE_HWACCEL=1` (macOS only, enables `h264_videotoolbox`; default is reliability-first `libx264`)
 - `SOURCE=testsrc` (debug mode; uses FFmpeg test pattern instead of screen capture)
 
@@ -48,5 +49,5 @@ Outputs go to `dist/`.
 
 - A single binary cannot run on both macOS and Windows. You get one executable per OS target.
 - On first run, macOS will ask for Screen Recording permission.
-- This mode targets near-realtime LAN playback (typically under ~1.5s latency on stable networks).
+- This mode targets near-realtime LAN playback (typically sub-second to low-single-digit seconds depending on network + browser buffering).
 - After PIN entry, the viewer page is video-only (no playback controls/UI chrome).

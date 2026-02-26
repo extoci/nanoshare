@@ -1,7 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
-import { networkInterfaces, platform } from "node:os";
 import { randomBytes } from "node:crypto";
-import mpegtsRuntime from "mpegts.js/dist/mpegts.js" with { type: "text" };
+import { networkInterfaces, platform } from "node:os";
+import {
+  MediaStreamTrackFactory,
+  RTCPeerConnection,
+  useH264,
+  type MediaStreamTrack
+} from "werift";
 
 type CaptureConfig = {
   ffmpegInputArgs: string[];
@@ -9,7 +14,17 @@ type CaptureConfig = {
 };
 
 type SessionStore = Map<string, number>;
-type LiveSocket = Bun.ServerWebSocket<{ sessionId: string }>;
+type ViewerStore = Map<string, RTCPeerConnection>;
+
+type OfferPayload = {
+  type: "offer";
+  sdp: string;
+};
+
+type SessionDescriptionPayload = {
+  type: "answer" | "offer";
+  sdp: string;
+};
 
 const PORT = Number(process.env.PORT ?? 37777);
 const PIN = process.env.PIN ?? generatePin();
@@ -18,12 +33,15 @@ const FPS = Number(process.env.FPS ?? 30);
 const VIDEO_BITRATE = process.env.VIDEO_BITRATE ?? "14M";
 const USE_HWACCEL = process.env.USE_HWACCEL === "1";
 const SOURCE = process.env.SOURCE ?? "screen";
+const RTP_PORT = Number(process.env.RTP_PORT ?? 5004);
 
 const sessions: SessionStore = new Map();
-const liveSockets = new Set<LiveSocket>();
+const viewers: ViewerStore = new Map();
 
 let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 let ffmpegLogs = "";
+let trackDispose: (() => void) | null = null;
+let sharedVideoTrack: MediaStreamTrack | null = null;
 
 const ANSI = {
   reset: "\x1b[0m",
@@ -117,7 +135,7 @@ function printCliPanel(lanUrl: string, localUrl: string): void {
     { text: `LAN URL : ${lanUrl}`, tone: "normal" as const },
     { text: `Local   : ${localUrl}`, tone: "normal" as const },
     { text: `PIN     : ${PIN}`, tone: "pin" as const },
-    { text: `Video   : ${FPS} fps | ${VIDEO_BITRATE}`, tone: "normal" as const },
+    { text: `Video   : ${FPS} fps | ${VIDEO_BITRATE} | WebRTC H.264`, tone: "normal" as const },
     { text: "Stop    : Ctrl+C", tone: "hint" as const }
   ];
 
@@ -275,9 +293,13 @@ function buildCodecArgs(): string[] {
       "-maxrate",
       VIDEO_BITRATE,
       "-bufsize",
-      "28M",
+      "6M",
       "-g",
-      String(FPS * 2),
+      String(FPS),
+      "-profile:v",
+      "baseline",
+      "-level",
+      "3.1",
       "-pix_fmt",
       "yuv420p"
     ];
@@ -297,40 +319,128 @@ function buildCodecArgs(): string[] {
     "-maxrate",
     VIDEO_BITRATE,
     "-bufsize",
-    "28M",
+    "6M",
     "-g",
-    String(FPS * 2),
+    String(FPS),
     "-keyint_min",
-    String(FPS * 2),
+    String(FPS),
     "-bf",
     "0",
     "-sc_threshold",
     "0",
+    "-profile:v",
+    "baseline",
+    "-level",
+    "3.1",
     "-pix_fmt",
     "yuv420p"
   ];
 }
 
-function broadcastChunk(chunk: Buffer): void {
-  for (const ws of liveSockets) {
-    try {
-      ws.send(chunk);
-    } catch {
-      liveSockets.delete(ws);
+async function waitForIceGatheringComplete(peer: RTCPeerConnection, timeoutMs = 1500): Promise<void> {
+  if (peer.iceGatheringState === "complete") return;
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      subscription.unSubscribe();
+      resolve();
+    }, timeoutMs);
+
+    const subscription = peer.iceGatheringStateChange.subscribe((state) => {
+      if (state !== "complete") return;
+      clearTimeout(timer);
+      subscription.unSubscribe();
+      resolve();
+    });
+  });
+}
+
+function createViewerPeer(viewerId: string): RTCPeerConnection {
+  const peer = new RTCPeerConnection({
+    codecs: {
+      video: [useH264({ payloadType: 96 })],
+      audio: []
+    },
+    iceUseIpv6: false
+  });
+
+  peer.connectionStateChange.subscribe((state) => {
+    if (state === "connected") {
+      console.log(paint(`[viewer:${viewerId}] connected (${viewers.size} total)`, ANSI.dim));
+      return;
     }
+
+    if (state === "failed" || state === "closed") {
+      void closeViewer(viewerId, `connection=${state}`);
+    }
+  });
+
+  peer.iceConnectionStateChange.subscribe((state) => {
+    if (state === "disconnected" || state === "failed" || state === "closed") {
+      void closeViewer(viewerId, `ice=${state}`);
+    }
+  });
+
+  return peer;
+}
+
+async function createAnswerForOffer(viewerId: string, offer: OfferPayload): Promise<SessionDescriptionPayload> {
+  if (!sharedVideoTrack) {
+    throw new Error("Shared video track is not ready.");
+  }
+
+  const peer = createViewerPeer(viewerId);
+  viewers.set(viewerId, peer);
+
+  try {
+    peer.addTrack(sharedVideoTrack);
+    await peer.setRemoteDescription(offer);
+    const answer = await peer.createAnswer();
+    await peer.setLocalDescription(answer);
+    await waitForIceGatheringComplete(peer);
+
+    const local = peer.localDescription;
+    if (!local) {
+      throw new Error("Failed to generate local WebRTC answer.");
+    }
+
+    return { type: local.type, sdp: local.sdp };
+  } catch (error) {
+    await closeViewer(viewerId, "offer handling failed");
+    throw error;
   }
 }
 
-function startFfmpegCapture(): Promise<void> {
+async function closeViewer(viewerId: string, reason: string): Promise<void> {
+  const peer = viewers.get(viewerId);
+  if (!peer) return;
+
+  viewers.delete(viewerId);
+  console.log(paint(`[viewer:${viewerId}] disconnected (${viewers.size} total) ${reason}`, ANSI.dim));
+
+  try {
+    await peer.close();
+  } catch {
+    // ignore
+  }
+}
+
+async function startFfmpegCapture(): Promise<void> {
   const capture = buildCaptureConfig();
   const codecArgs = buildCodecArgs();
+  const [track, port, dispose] = await MediaStreamTrackFactory.rtpSource({
+    kind: "video",
+    port: RTP_PORT
+  });
 
+  sharedVideoTrack = track;
+  trackDispose = dispose;
+
+  const output = `rtp://127.0.0.1:${port}?pkt_size=1200`;
   const args = [
     "-hide_banner",
     "-loglevel",
     "warning",
-    "-fflags",
-    "+genpts",
     ...capture.ffmpegInputArgs,
     "-an",
     ...codecArgs,
@@ -339,23 +449,15 @@ function startFfmpegCapture(): Promise<void> {
     "-fps_mode",
     "cfr",
     "-f",
-    "mpegts",
-    "-flush_packets",
-    "1",
-    "-muxdelay",
-    "0",
-    "-muxpreload",
-    "0",
-    "pipe:1"
+    "rtp",
+    "-payload_type",
+    "96",
+    output
   ];
 
   ffmpegProcess = spawn("ffmpeg", args, {
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "ignore", "pipe"]
   });
-
-  if (!ffmpegProcess.stdout) {
-    throw new Error("Failed to open FFmpeg stdout pipe.");
-  }
 
   if (ffmpegProcess.stderr) {
     ffmpegProcess.stderr.setEncoding("utf8");
@@ -365,8 +467,9 @@ function startFfmpegCapture(): Promise<void> {
   }
 
   console.log(`Capture source: ${capture.source}`);
+  console.log(`RTP ingress : udp://127.0.0.1:${port}`);
 
-  return new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     let settled = false;
 
     const resolveOnce = () => {
@@ -383,16 +486,15 @@ function startFfmpegCapture(): Promise<void> {
       reject(error);
     };
 
-    ffmpegProcess?.stdout?.on("data", (chunk: Buffer) => {
-      if (!settled) resolveOnce();
-      broadcastChunk(chunk);
+    track.onReceiveRtp.once(() => {
+      resolveOnce();
     });
 
     ffmpegProcess?.on("exit", (code, signal) => {
       const abnormal = !(code === 0 || signal === "SIGTERM" || signal === "SIGKILL");
 
       if (!settled) {
-        rejectOnce(new Error("FFmpeg exited before stream became ready."));
+        rejectOnce(new Error("FFmpeg exited before RTP stream became ready."));
         return;
       }
 
@@ -407,7 +509,7 @@ function startFfmpegCapture(): Promise<void> {
     });
 
     const timeout = setTimeout(() => {
-      rejectOnce(new Error("Timed out waiting for realtime stream packets."));
+      rejectOnce(new Error("Timed out waiting for RTP packets from FFmpeg."));
     }, 20_000);
   });
 }
@@ -421,14 +523,32 @@ function stopEverything(): void {
     }
   }
 
-  for (const ws of liveSockets) {
+  for (const [viewerId, peer] of viewers.entries()) {
+    viewers.delete(viewerId);
     try {
-      ws.close();
+      void peer.close();
     } catch {
       // ignore
     }
   }
-  liveSockets.clear();
+
+  if (trackDispose) {
+    try {
+      trackDispose();
+    } catch {
+      // ignore
+    }
+    trackDispose = null;
+  }
+
+  if (sharedVideoTrack) {
+    try {
+      sharedVideoTrack.stop();
+    } catch {
+      // ignore
+    }
+    sharedVideoTrack = null;
+  }
 }
 
 function loginPage(errorText?: string): string {
@@ -561,7 +681,7 @@ function loginPage(errorText?: string): string {
       <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required autofocus />
       <button type="submit">Open Live View</button>
     </form>
-    <div class="hint">Low-latency LAN mode is tuned for near-realtime playback.</div>
+    <div class="hint">WebRTC LAN mode is tuned for near-realtime playback.</div>
   </main>
 </body>
 </html>`;
@@ -595,83 +715,94 @@ function watchPage(): string {
 
   <script>
     const video = document.getElementById("video");
-
-    const loadScript = (src) =>
-      new Promise((resolve, reject) => {
-        const existing = document.querySelector('script[data-mpegts="1"]');
-        if (existing) return resolve();
-        const script = document.createElement("script");
-        script.src = src;
-        script.dataset.mpegts = "1";
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("Failed to load MPEGTS runtime"));
-        document.head.appendChild(script);
-      });
-
-    let player = null;
+    let peer = null;
     let reconnectTimer = null;
 
-    const cleanupPlayer = () => {
-      if (!player) return;
+    const closePeer = () => {
+      if (!peer) return;
       try {
-        player.unload();
+        peer.ontrack = null;
       } catch {}
       try {
-        player.detachMediaElement();
+        peer.close();
       } catch {}
-      try {
-        player.destroy();
-      } catch {}
-      player = null;
+      peer = null;
     };
 
-    const wsUrl = () => {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      return proto + "://" + location.host + "/live/ws";
+    const waitForIceGatheringComplete = (pc, timeoutMs = 1500) =>
+      new Promise((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+          resolve();
+          return;
+        }
+
+        const timer = setTimeout(() => {
+          pc.removeEventListener("icegatheringstatechange", onChange);
+          resolve();
+        }, timeoutMs);
+
+        const onChange = () => {
+          if (pc.iceGatheringState !== "complete") return;
+          clearTimeout(timer);
+          pc.removeEventListener("icegatheringstatechange", onChange);
+          resolve();
+        };
+
+        pc.addEventListener("icegatheringstatechange", onChange);
+      });
+
+    const scheduleReconnect = () => {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(() => {
+        connect().catch((err) => console.error(err));
+      }, 700);
     };
 
     const connect = async () => {
       clearTimeout(reconnectTimer);
+      closePeer();
 
-      await loadScript("/assets/mpegts.js");
-      const mpegts = window.mpegts;
-      if (!mpegts || !mpegts.isSupported()) {
-        console.error("This browser cannot run realtime MPEG-TS playback.");
-        return;
+      const pc = new RTCPeerConnection({
+        iceServers: []
+      });
+
+      peer = pc;
+      pc.addTransceiver("video", { direction: "recvonly" });
+
+      pc.ontrack = (event) => {
+        const stream = event.streams && event.streams[0]
+          ? event.streams[0]
+          : new MediaStream([event.track]);
+
+        if (video.srcObject !== stream) {
+          video.srcObject = stream;
+        }
+        video.play().catch(() => {});
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === "failed" || state === "disconnected" || state === "closed") {
+          scheduleReconnect();
+        }
+      };
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc);
+
+      const response = await fetch("/webrtc/offer", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(pc.localDescription)
+      });
+
+      if (!response.ok) {
+        throw new Error("Signaling failed (" + response.status + ")");
       }
 
-      cleanupPlayer();
-
-      player = mpegts.createPlayer(
-        {
-          type: "mpegts",
-          isLive: true,
-          url: wsUrl()
-        },
-        {
-          enableWorker: true,
-          lazyLoad: false,
-          autoCleanupSourceBuffer: true,
-          liveBufferLatencyChasing: true,
-          liveBufferLatencyMaxLatency: 1.0,
-          liveBufferLatencyMinRemain: 0.2,
-          stashInitialSize: 64
-        }
-      );
-
-      player.attachMediaElement(video);
-      player.load();
-      video.play().catch(() => {});
-
-      player.on(mpegts.Events.ERROR, (_type, detail) => {
-        console.error("Playback error:", String(detail || "unknown"));
-        cleanupPlayer();
-        reconnectTimer = setTimeout(() => {
-          connect().catch((err) => {
-            console.error(err);
-          });
-        }, 700);
-      });
+      const answer = await response.json();
+      await pc.setRemoteDescription(answer);
     };
 
     const requestFullscreen = () => {
@@ -680,16 +811,18 @@ function watchPage(): string {
         video.requestFullscreen().catch(() => {});
       }
     };
+
     document.addEventListener("pointerdown", requestFullscreen, { once: true });
     document.addEventListener("keydown", requestFullscreen, { once: true });
 
     connect().catch((err) => {
       console.error(err);
+      scheduleReconnect();
     });
 
     window.addEventListener("beforeunload", () => {
       clearTimeout(reconnectTimer);
-      cleanupPlayer();
+      closePeer();
     });
   </script>
 </body>
@@ -713,6 +846,29 @@ async function readPostedPin(req: Request): Promise<string> {
   return (params.get("pin") ?? "").trim();
 }
 
+async function readPostedOffer(req: Request): Promise<OfferPayload | null> {
+  const contentType = req.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return null;
+
+  let parsed: unknown;
+  try {
+    parsed = await req.json();
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== "object") return null;
+
+  const maybe = parsed as Record<string, unknown>;
+  if (maybe.type !== "offer") return null;
+  if (typeof maybe.sdp !== "string" || maybe.sdp.length === 0) return null;
+
+  return {
+    type: "offer",
+    sdp: maybe.sdp
+  };
+}
+
 function unauthorized(): Response {
   return new Response("Unauthorized", { status: 401 });
 }
@@ -733,25 +889,15 @@ async function main(): Promise<void> {
 
   setInterval(cleanupExpiredSessions, 60_000).unref();
 
-  const server = Bun.serve<{ sessionId: string }>({
+  const server = Bun.serve({
     hostname: "0.0.0.0",
     port: PORT,
-    fetch: async (req: Request, srv) => {
+    fetch: async (req: Request) => {
       const url = new URL(req.url);
       const { pathname } = url;
 
       if (pathname === "/health") {
         return new Response("ok", { status: 200 });
-      }
-
-      if (pathname === "/assets/mpegts.js") {
-        return new Response(mpegtsRuntime, {
-          status: 200,
-          headers: {
-            "content-type": "text/javascript; charset=utf-8",
-            "cache-control": "public, max-age=31536000"
-          }
-        });
       }
 
       if (pathname === "/") {
@@ -779,35 +925,33 @@ async function main(): Promise<void> {
         return html(watchPage());
       }
 
-      if (pathname === "/live/ws") {
-        const sessionId = getValidSessionId(req);
-        if (!sessionId) return unauthorized();
+      if (pathname === "/webrtc/offer" && req.method === "POST") {
+        if (!isAuthorized(req)) return unauthorized();
 
-        if (srv.upgrade(req, { data: { sessionId } })) {
-          return;
+        const offer = await readPostedOffer(req);
+        if (!offer) {
+          return new Response("Bad offer payload", { status: 400 });
         }
 
-        return new Response("WebSocket upgrade failed", { status: 500 });
+        const viewerId = randomBytes(8).toString("hex");
+
+        try {
+          const answer = await createAnswerForOffer(viewerId, offer);
+          return new Response(JSON.stringify(answer), {
+            status: 200,
+            headers: { "content-type": "application/json; charset=utf-8" }
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Offer handling failed for ${viewerId}: ${message}`);
+          if (ffmpegLogs.trim()) {
+            console.error("Recent FFmpeg logs:\n", ffmpegLogs);
+          }
+          return new Response("Failed to create WebRTC session", { status: 500 });
+        }
       }
 
       return new Response("Not found", { status: 404 });
-    },
-    websocket: {
-      open(ws: LiveSocket) {
-        if (!sessions.has(ws.data.sessionId)) {
-          ws.close();
-          return;
-        }
-        liveSockets.add(ws);
-        console.log(paint(`[viewer] connected (${liveSockets.size} total)`, ANSI.dim));
-      },
-      message() {
-        // viewer sockets are receive-only
-      },
-      close(ws: LiveSocket) {
-        liveSockets.delete(ws);
-        console.log(paint(`[viewer] disconnected (${liveSockets.size} total)`, ANSI.dim));
-      }
     }
   });
 
