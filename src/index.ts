@@ -25,6 +25,15 @@ const liveSockets = new Set<LiveSocket>();
 let ffmpegProcess: ReturnType<typeof spawn> | null = null;
 let ffmpegLogs = "";
 
+const ANSI = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  cyan: "\x1b[36m",
+  green: "\x1b[32m",
+  yellow: "\x1b[33m"
+} as const;
+
 function generatePin(): string {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -95,6 +104,47 @@ function getLanIp(): string {
     }
   }
   return "127.0.0.1";
+}
+
+function paint(text: string, ...codes: string[]): string {
+  return `${codes.join("")}${text}${ANSI.reset}`;
+}
+
+function printCliPanel(lanUrl: string, localUrl: string): void {
+  const rows = [
+    { text: "LAN Screen Share Realtime", tone: "title" as const },
+    { text: "Open URL on same network, enter PIN once.", tone: "hint" as const },
+    { text: `LAN URL : ${lanUrl}`, tone: "normal" as const },
+    { text: `Local   : ${localUrl}`, tone: "normal" as const },
+    { text: `PIN     : ${PIN}`, tone: "pin" as const },
+    { text: `Video   : ${FPS} fps | ${VIDEO_BITRATE}`, tone: "normal" as const },
+    { text: "Stop    : Ctrl+C", tone: "hint" as const }
+  ];
+
+  const width = rows.reduce((max, row) => Math.max(max, row.text.length), 0);
+  const top = `┌${"─".repeat(width + 2)}┐`;
+  const bottom = `└${"─".repeat(width + 2)}┘`;
+
+  console.log("");
+  console.log(paint(top, ANSI.cyan));
+  for (const row of rows) {
+    const line = `│ ${row.text.padEnd(width)} │`;
+    if (row.tone === "title") {
+      console.log(paint(line, ANSI.bold, ANSI.green));
+      continue;
+    }
+    if (row.tone === "pin") {
+      console.log(paint(line, ANSI.bold, ANSI.yellow));
+      continue;
+    }
+    if (row.tone === "hint") {
+      console.log(paint(line, ANSI.dim));
+      continue;
+    }
+    console.log(line);
+  }
+  console.log(paint(bottom, ANSI.cyan));
+  console.log("");
 }
 
 function detectMacScreenInputIndex(): number {
@@ -525,104 +575,26 @@ function watchPage(): string {
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Watching Live Screen</title>
   <style>
-    :root {
-      --bg: #101418;
-      --frame: #182129;
-      --line: #2e404d;
-      --ink: #eff5f8;
-      --muted: #9ab0bd;
-      --accent: #7fdbbe;
-      --warn: #ffd6a0;
-      --err: #ffb0b0;
-    }
     * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
     body {
       margin: 0;
-      min-height: 100dvh;
-      display: grid;
-      grid-template-rows: auto 1fr;
-      background:
-        radial-gradient(circle at 84% 0%, #203946 0 22%, transparent 42%),
-        radial-gradient(circle at 0% 100%, #223332 0 24%, transparent 44%),
-        var(--bg);
-      color: var(--ink);
-      font-family: "Avenir Next", "Segoe UI", sans-serif;
-    }
-    header {
-      padding: .8rem 1rem;
-      border-bottom: 1px solid #263541;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: .8rem;
-    }
-    .title {
-      font-size: .92rem;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--muted);
-    }
-    .status {
-      color: var(--accent);
-      font-size: .9rem;
-      white-space: nowrap;
-    }
-    .frame {
-      width: min(100vw, 1700px);
-      margin: 0 auto;
-      padding: .8rem;
-      display: grid;
-      place-items: center;
-      align-content: center;
+      background: #000;
+      overflow: hidden;
     }
     video {
-      width: 100%;
-      max-height: calc(100dvh - 130px);
+      width: 100vw;
+      height: 100vh;
       background: #000;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: 0 20px 55px #00000066;
-    }
-    .error {
-      color: var(--err);
-      font-size: .9rem;
-      text-align: center;
-      margin-top: .75rem;
-      min-height: 1.2rem;
-    }
-    .note {
-      color: var(--warn);
-      opacity: .9;
-      margin-top: .4rem;
-      font-size: .8rem;
-      text-align: center;
+      object-fit: contain;
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="title">LAN Screen Share</div>
-    <div class="status" id="status">Connecting...</div>
-  </header>
-  <main class="frame">
-    <video id="video" controls autoplay playsinline muted></video>
-    <div id="error" class="error"></div>
-    <div class="note">Expected latency: typically under 1.5s on stable LAN.</div>
-  </main>
+  <video id="video" autoplay playsinline muted></video>
 
   <script>
     const video = document.getElementById("video");
-    const status = document.getElementById("status");
-    const error = document.getElementById("error");
-
-    const setStatus = (text, tone = "ok") => {
-      status.textContent = text;
-      status.style.color = tone === "error" ? "#ffb0b0" : tone === "warn" ? "#ffd6a0" : "#7fdbbe";
-    };
-
-    const setError = (text) => {
-      error.textContent = text;
-    };
 
     const loadScript = (src) =>
       new Promise((resolve, reject) => {
@@ -660,14 +632,11 @@ function watchPage(): string {
 
     const connect = async () => {
       clearTimeout(reconnectTimer);
-      setError("");
-      setStatus("Connecting...");
 
       await loadScript("/assets/mpegts.js");
       const mpegts = window.mpegts;
       if (!mpegts || !mpegts.isSupported()) {
-        setStatus("Unsupported", "error");
-        setError("This browser cannot run realtime MPEG-TS playback.");
+        console.error("This browser cannot run realtime MPEG-TS playback.");
         return;
       }
 
@@ -693,24 +662,29 @@ function watchPage(): string {
       player.attachMediaElement(video);
       player.load();
       video.play().catch(() => {});
-      setStatus("Live", "ok");
 
       player.on(mpegts.Events.ERROR, (_type, detail) => {
-        setStatus("Reconnecting...", "warn");
-        setError("Playback error: " + String(detail || "unknown"));
+        console.error("Playback error:", String(detail || "unknown"));
         cleanupPlayer();
         reconnectTimer = setTimeout(() => {
           connect().catch((err) => {
-            setStatus("Error", "error");
-            setError(String(err));
+            console.error(err);
           });
         }, 700);
       });
     };
 
+    const requestFullscreen = () => {
+      if (document.fullscreenElement) return;
+      if (video.requestFullscreen) {
+        video.requestFullscreen().catch(() => {});
+      }
+    };
+    document.addEventListener("pointerdown", requestFullscreen, { once: true });
+    document.addEventListener("keydown", requestFullscreen, { once: true });
+
     connect().catch((err) => {
-      setStatus("Error", "error");
-      setError(String(err));
+      console.error(err);
     });
 
     window.addEventListener("beforeunload", () => {
@@ -825,12 +799,14 @@ async function main(): Promise<void> {
           return;
         }
         liveSockets.add(ws);
+        console.log(paint(`[viewer] connected (${liveSockets.size} total)`, ANSI.dim));
       },
       message() {
         // viewer sockets are receive-only
       },
       close(ws: LiveSocket) {
         liveSockets.delete(ws);
+        console.log(paint(`[viewer] disconnected (${liveSockets.size} total)`, ANSI.dim));
       }
     }
   });
@@ -845,13 +821,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  console.log("\nLAN Screen Share (Realtime) is live");
-  console.log("---------------------------------");
-  console.log(`Viewer URL (LAN):  ${publicUrl}`);
-  console.log(`Viewer URL (local): ${localUrl}`);
-  console.log(`PIN: ${PIN}`);
-  console.log(`FPS: ${FPS} | Bitrate: ${VIDEO_BITRATE}`);
-  console.log("\nPress Ctrl+C to stop.\n");
+  printCliPanel(publicUrl, localUrl);
 }
 
 main().catch((error) => {

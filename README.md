@@ -49,3 +49,4 @@ Outputs go to `dist/`.
 - A single binary cannot run on both macOS and Windows. You get one executable per OS target.
 - On first run, macOS will ask for Screen Recording permission.
 - This mode targets near-realtime LAN playback (typically under ~1.5s latency on stable networks).
+- After PIN entry, the viewer page is video-only (no playback controls/UI chrome).
