@@ -1,4 +1,4 @@
-# LAN Screen Share
+# casty
 
 One-process screen broadcaster:
 - Captures your screen with FFmpeg (host runs natively, no host browser needed).
@@ -27,6 +27,21 @@ Optional env vars:
 - `RTP_PORT` (default `5004`; local UDP ingress from FFmpeg into WebRTC)
 - `USE_HWACCEL=1` (macOS only, enables `h264_videotoolbox`; default is reliability-first `libx264`)
 - `SOURCE=testsrc` (debug mode; uses FFmpeg test pattern instead of screen capture)
+
+CLI flags are also supported (flags take precedence over env vars):
+- `--port <number>`
+- `--pin <pin>`
+- `--fps <number>`
+- `--video-bitrate <bitrate>`
+- `--use-hwaccel`
+- `--source <screen|testsrc>`
+- `--rtp-port <number>`
+
+Example:
+
+```bash
+bun dev --fps 60 --video-bitrate 20M
+```
 
 ## Build Standalone Executable
 

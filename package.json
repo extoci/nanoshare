@@ -1,15 +1,16 @@
 {
-  "name": "lan-screenshare",
+  "name": "casty",
   "version": "0.1.0",
   "type": "module",
   "private": true,
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build:local": "bun build --compile --minify --outfile dist/screenshare ./src/index.ts",
-    "build:mac": "bun build --compile --minify --target=bun-darwin-arm64 --outfile dist/screenshare-macos ./src/index.ts",
-    "build:win": "bun build --compile --minify --target=bun-windows-x64 --outfile dist/screenshare-windows.exe ./src/index.ts"
+    "build:local": "bun build --compile --minify --outfile dist/casty ./src/index.ts",
+    "build:mac": "bun build --compile --minify --target=bun-darwin-arm64 --outfile dist/casty-macos ./src/index.ts",
+    "build:win": "bun build --compile --minify --target=bun-windows-x64 --outfile dist/casty-windows.exe ./src/index.ts"
   },
   "dependencies": {
+    "commander": "^14.0.3",
     "werift": "^0.22.9"
   },
   "devDependencies": {

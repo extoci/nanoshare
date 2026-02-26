@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces, platform } from "node:os";
+import { Command } from "commander";
 import {
   MediaStreamTrackFactory,
   RTCPeerConnection,
@@ -26,14 +27,83 @@ type SessionDescriptionPayload = {
   sdp: string;
 };
 
-const PORT = Number(process.env.PORT ?? 37777);
-const PIN = process.env.PIN ?? generatePin();
+type SourceMode = "screen" | "testsrc";
+
+type CliOptions = {
+  port?: number;
+  pin?: string;
+  fps?: number;
+  videoBitrate?: string;
+  useHwaccel?: boolean;
+  source?: SourceMode;
+  rtpPort?: number;
+};
+
+type RuntimeConfig = {
+  port: number;
+  pin: string;
+  fps: number;
+  videoBitrate: string;
+  useHwaccel: boolean;
+  source: SourceMode;
+  rtpPort: number;
+};
+
+function parsePositiveInteger(value: string, label: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer.`);
+  }
+  return parsed;
+}
+
+function parseSourceMode(value: string): SourceMode {
+  if (value === "screen" || value === "testsrc") return value;
+  throw new Error(`source must be either "screen" or "testsrc", received "${value}".`);
+}
+
+function parseCliOptions(): CliOptions {
+  const program = new Command();
+  program
+    .name("casty")
+    .allowExcessArguments(false)
+    .option("-p, --port <number>", "HTTP server port", (value) => parsePositiveInteger(value, "port"))
+    .option("--pin <pin>", "Access PIN for viewers")
+    .option("-f, --fps <number>", "Capture and encode frame rate", (value) => parsePositiveInteger(value, "fps"))
+    .option("-b, --video-bitrate <bitrate>", "Video bitrate (for example 14M)")
+    .option("--use-hwaccel", "Enable hardware encoder on macOS (h264_videotoolbox)")
+    .option("--source <mode>", 'Capture source ("screen" or "testsrc")', parseSourceMode)
+    .option("--rtp-port <number>", "Local RTP ingress port", (value) => parsePositiveInteger(value, "rtp-port"));
+
+  program.parse(process.argv);
+  return program.opts<CliOptions>();
+}
+
+function getRuntimeConfig(): RuntimeConfig {
+  const cli = parseCliOptions();
+  const env = process.env;
+
+  return {
+    port: cli.port ?? parsePositiveInteger(env.PORT ?? "37777", "PORT"),
+    pin: cli.pin ?? env.PIN ?? generatePin(),
+    fps: cli.fps ?? parsePositiveInteger(env.FPS ?? "30", "FPS"),
+    videoBitrate: cli.videoBitrate ?? env.VIDEO_BITRATE ?? "14M",
+    useHwaccel: cli.useHwaccel ?? env.USE_HWACCEL === "1",
+    source: cli.source ?? parseSourceMode(env.SOURCE ?? "screen"),
+    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.RTP_PORT ?? "5004", "RTP_PORT")
+  };
+}
+
+const config = getRuntimeConfig();
+
+const PORT = config.port;
+const PIN = config.pin;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
-const FPS = Number(process.env.FPS ?? 30);
-const VIDEO_BITRATE = process.env.VIDEO_BITRATE ?? "14M";
-const USE_HWACCEL = process.env.USE_HWACCEL === "1";
-const SOURCE = process.env.SOURCE ?? "screen";
-const RTP_PORT = Number(process.env.RTP_PORT ?? 5004);
+const FPS = config.fps;
+const VIDEO_BITRATE = config.videoBitrate;
+const USE_HWACCEL = config.useHwaccel;
+const SOURCE = config.source;
+const RTP_PORT = config.rtpPort;
 
 const sessions: SessionStore = new Map();
 const viewers: ViewerStore = new Map();
@@ -88,7 +158,7 @@ function createSession(): { id: string; expiresAt: number } {
 
 function getValidSessionId(req: Request): string | null {
   const cookie = req.headers.get("cookie") ?? "";
-  const sessionId = parseCookies(cookie).get("screenshare_session");
+  const sessionId = parseCookies(cookie).get("casty_session");
   if (!sessionId) return null;
 
   const expiresAt = sessions.get(sessionId);
@@ -130,7 +200,7 @@ function paint(text: string, ...codes: string[]): string {
 
 function printCliPanel(lanUrl: string, localUrl: string): void {
   const rows = [
-    { text: "LAN Screen Share Realtime", tone: "title" as const },
+    { text: "Casty Realtime", tone: "title" as const },
     { text: "Open URL on same network, enter PIN once.", tone: "hint" as const },
     { text: `LAN URL : ${lanUrl}`, tone: "normal" as const },
     { text: `Local   : ${localUrl}`, tone: "normal" as const },
@@ -466,9 +536,6 @@ async function startFfmpegCapture(): Promise<void> {
     });
   }
 
-  console.log(`Capture source: ${capture.source}`);
-  console.log(`RTP ingress : udp://127.0.0.1:${port}`);
-
   await new Promise<void>((resolve, reject) => {
     let settled = false;
 
@@ -561,19 +628,22 @@ function loginPage(errorText?: string): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>LAN Screen Share</title>
+  <title>Casty</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #f2f6f5;
-      --panel: #ffffffdd;
-      --ink: #14211f;
-      --muted: #54716a;
-      --accent: #1a8d73;
-      --accent-ink: #e9fffa;
-      --danger: #8f2f2f;
+      --bg: #050505;
+      --bg-alt: #0c0c0c;
+      --panel: #0a0a0a;
+      --ink: #f5f5f5;
+      --muted: #a3a3a3;
+      --line: #262626;
+      --line-strong: #404040;
+      --danger: #ff6b6b;
+      --button-bg: #f5f5f5;
+      --button-ink: #050505;
     }
     * { box-sizing: border-box; }
     body {
@@ -581,107 +651,131 @@ function loginPage(errorText?: string): string {
       min-height: 100dvh;
       display: grid;
       place-items: center;
-      font-family: "IBM Plex Sans", sans-serif;
+      font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
       color: var(--ink);
       background:
-        radial-gradient(circle at 12% 18%, #b5f3df 0 18%, transparent 40%),
-        radial-gradient(circle at 84% 82%, #b9deff 0 20%, transparent 42%),
-        linear-gradient(140deg, #f9fcfb 0%, #eef5f3 45%, #f9fafc 100%);
+        linear-gradient(180deg, #090909 0%, #050505 45%, #020202 100%),
+        repeating-linear-gradient(
+          0deg,
+          transparent 0 31px,
+          #121212 31px 32px
+        );
       padding: 1.25rem;
     }
     .panel {
       width: min(460px, 100%);
-      background: var(--panel);
-      border: 1px solid #d0ddd8;
-      border-radius: 20px;
-      padding: 1.4rem;
+      background: linear-gradient(180deg, #0d0d0d 0%, #090909 100%);
+      border: 1px solid var(--line-strong);
+      padding: 1.4rem 1.4rem 1.3rem;
       box-shadow:
-        0 15px 45px #213d3a1f,
-        inset 0 1px 0 #ffffff;
-      backdrop-filter: blur(10px);
-      animation: settle .48s ease-out;
+        0 0 0 1px #000,
+        0 22px 60px #00000066;
+      animation: settle .36s ease-out;
     }
     .badge {
-      font-size: .75rem;
-      letter-spacing: .18em;
+      font-size: .74rem;
+      letter-spacing: .2em;
       text-transform: uppercase;
-      color: #2f6558;
-      margin: 0 0 .55rem;
-      font-family: "Archivo", sans-serif;
+      color: var(--muted);
+      margin: 0 0 .6rem;
     }
     h1 {
-      margin: 0;
-      font: 700 clamp(1.45rem, 2.5vw, 1.85rem) "Archivo", sans-serif;
-      letter-spacing: -.02em;
+      margin: 0 0 .4rem;
+      font-size: clamp(1.24rem, 2.2vw, 1.55rem);
+      line-height: 1.2;
+      letter-spacing: .01em;
+      text-transform: uppercase;
     }
     p {
-      margin: .55rem 0 1.2rem;
+      margin: 0 0 1.2rem;
       color: var(--muted);
-      line-height: 1.35;
+      line-height: 1.48;
+      font-size: .93rem;
     }
     .alert {
-      margin: 0 0 .9rem;
-      padding: .65rem .8rem;
-      border-radius: .7rem;
-      border: 1px solid #ebbbbb;
-      background: #fff2f2;
+      margin: 0 0 .95rem;
+      padding: .68rem .78rem;
+      border: 1px solid #7f1d1d;
+      background: #2a0f0f;
       color: var(--danger);
-      font-size: .95rem;
+      font-size: .88rem;
     }
-    form { display: grid; gap: .72rem; }
-    label { font-size: .9rem; color: #25554a; }
+    form { display: grid; gap: .68rem; }
+    label {
+      font-size: .85rem;
+      color: #d4d4d4;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+    }
     input {
       width: 100%;
-      border: 1px solid #bad4cb;
-      border-radius: .82rem;
-      padding: .9rem .95rem;
-      font-size: 1.02rem;
-      letter-spacing: .08em;
-      font-family: "Archivo", sans-serif;
+      border: 1px solid var(--line);
+      padding: .86rem .88rem;
+      font-size: 1rem;
+      letter-spacing: .1em;
+      font-family: inherit;
       color: var(--ink);
-      background: #fbfffe;
+      background: #050505;
       outline: none;
-      transition: border-color .2s ease, box-shadow .2s ease;
+      transition: border-color .15s ease, box-shadow .15s ease;
     }
     input:focus {
-      border-color: #1a8d73;
-      box-shadow: 0 0 0 4px #1a8d7324;
+      border-color: #f5f5f5;
+      box-shadow: inset 0 0 0 1px #f5f5f5;
     }
     button {
-      border: 0;
-      border-radius: .82rem;
-      padding: .9rem 1rem;
-      font: 700 .95rem "Archivo", sans-serif;
-      letter-spacing: .03em;
+      border: 1px solid var(--button-bg);
+      padding: .88rem 1rem;
+      font: 700 .88rem "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
       cursor: pointer;
-      color: var(--accent-ink);
-      background: linear-gradient(95deg, #177961, #1ca786);
-      box-shadow: 0 8px 20px #0d54442c;
+      color: var(--button-ink);
+      background: var(--button-bg);
+      transition: background-color .15s ease, color .15s ease;
     }
-    button:hover { filter: brightness(1.05); }
+    button:hover {
+      background: #050505;
+      color: var(--button-bg);
+    }
     .hint {
-      margin-top: .8rem;
-      font-size: .84rem;
-      color: #3f655e;
+      margin-top: .88rem;
+      font-size: .78rem;
+      color: #8a8a8a;
+      border-top: 1px solid var(--line);
+      padding-top: .8rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .hint a {
+      color: #f5f5f5;
+      text-decoration: none;
+      border-bottom: 1px solid #404040;
+      padding-bottom: 1px;
+      transition: border-color .15s ease, color .15s ease;
+    }
+    .hint a:hover {
+      color: #ffffff;
+      border-color: #f5f5f5;
     }
     @keyframes settle {
-      from { opacity: 0; transform: translateY(8px) scale(.99); }
+      from { opacity: 0; transform: translateY(8px); }
       to { opacity: 1; transform: translateY(0) scale(1); }
     }
   </style>
 </head>
 <body>
   <main class="panel">
-    <div class="badge">LAN Realtime Stream</div>
+    <div class="badge">Casty / Access Gateway</div>
     <h1>Enter Access PIN</h1>
-    <p>Use the 6-digit code shown on the host machine to unlock this local stream.</p>
+    <p>Use the 6-digit code from the host machine to unlock this low-latency screen stream.</p>
     ${errorBanner}
     <form method="post" action="/auth">
       <label for="pin">PIN</label>
       <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required autofocus />
-      <button type="submit">Open Live View</button>
+      <button type="submit">Open Live Feed</button>
     </form>
-    <div class="hint">WebRTC LAN mode is tuned for near-realtime playback.</div>
+    <div class="hint"><a href="https://github.com/extoci/casty" target="_blank" rel="noreferrer noopener">View Source on GitHub</a></div>
   </main>
 </body>
 </html>`;
@@ -694,29 +788,182 @@ function watchPage(): string {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Watching Live Screen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
-    * { box-sizing: border-box; }
+    :root {
+      --bg: #000;
+      --bg-alt: #0a0a0a;
+      --ink: #fafafa;
+      --muted: #a3a3a3;
+      --line: #262626;
+      --ok: #3ddc84;
+      --warn: #f8d66d;
+      --err: #ff6b6b;
+    }
+    * {
+      box-sizing: border-box;
+      border-radius: 0 !important;
+    }
     html, body { width: 100%; height: 100%; }
     body {
       margin: 0;
-      background: #000;
+      background:
+        linear-gradient(180deg, #050505 0%, #000 100%),
+        repeating-linear-gradient(
+          90deg,
+          transparent 0 39px,
+          #111 39px 40px
+        );
       overflow: hidden;
+      color: var(--ink);
+      font-family: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    video {
+    .frame {
+      position: relative;
       width: 100vw;
       height: 100vh;
+    }
+    .chrome {
+      position: absolute;
+      inset: 0 0 auto 0;
+      z-index: 5;
+      height: 56px;
+      border-bottom: 1px solid var(--line);
+      background: #050505ee;
+      backdrop-filter: blur(3px);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0 1rem;
+    }
+    .id {
+      font-size: .82rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: .55rem;
+      font-size: .82rem;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      padding: .46rem .6rem;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      background: var(--muted);
+      animation: pulse 1.4s linear infinite;
+      transform-origin: center;
+    }
+    .dot.connected { background: var(--ok); }
+    .dot.connecting { background: var(--warn); }
+    .dot.error { background: var(--err); }
+    .actions {
+      display: flex;
+      gap: .52rem;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .action {
+      border: 1px solid var(--ink);
+      background: var(--ink);
+      color: #050505;
+      font: 700 .78rem "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      padding: .47rem .72rem;
+      cursor: pointer;
+      transition: background-color .15s ease, color .15s ease;
+    }
+    .action:hover {
+      background: #050505;
+      color: var(--ink);
+    }
+    .viewport {
+      width: 100vw;
+      height: 100vh;
+      padding-top: 56px;
+    }
+    video {
+      display: block;
+      width: 100vw;
+      height: calc(100vh - 56px);
       background: #000;
       object-fit: contain;
+      border-top: 1px solid #000;
+      border-left: 1px solid #000;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: .4; }
+      50% { opacity: 1; }
+    }
+    @media (max-width: 640px) {
+      .chrome {
+        height: 64px;
+        padding: 0 .72rem;
+        gap: .6rem;
+      }
+      .id {
+        max-width: 36vw;
+        font-size: .74rem;
+      }
+      .status {
+        font-size: .72rem;
+        padding: .4rem .5rem;
+      }
+      .action {
+        font-size: .72rem;
+        padding: .42rem .55rem;
+      }
+      .viewport {
+        padding-top: 64px;
+      }
+      video {
+        height: calc(100vh - 64px);
+      }
     }
   </style>
 </head>
 <body>
-  <video id="video" autoplay playsinline muted></video>
+  <main class="frame">
+    <header class="chrome">
+      <div class="id">Casty / Viewer</div>
+      <div class="status">
+        <span id="statusDot" class="dot connecting"></span>
+        <span id="statusText">Connecting</span>
+      </div>
+      <div class="actions">
+        <button id="fullscreenBtn" class="action" type="button">Fullscreen</button>
+      </div>
+    </header>
+    <section class="viewport">
+      <video id="video" autoplay playsinline muted></video>
+    </section>
+  </main>
 
   <script>
     const video = document.getElementById("video");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const fullscreenBtn = document.getElementById("fullscreenBtn");
     let peer = null;
     let reconnectTimer = null;
+
+    const setStatus = (state, label) => {
+      statusText.textContent = label;
+      statusDot.className = "dot " + state;
+    };
 
     const closePeer = () => {
       if (!peer) return;
@@ -753,6 +1000,7 @@ function watchPage(): string {
 
     const scheduleReconnect = () => {
       clearTimeout(reconnectTimer);
+      setStatus("connecting", "Reconnecting");
       reconnectTimer = setTimeout(() => {
         connect().catch((err) => console.error(err));
       }, 700);
@@ -761,6 +1009,7 @@ function watchPage(): string {
     const connect = async () => {
       clearTimeout(reconnectTimer);
       closePeer();
+      setStatus("connecting", "Connecting");
 
       const pc = new RTCPeerConnection({
         iceServers: []
@@ -782,6 +1031,17 @@ function watchPage(): string {
 
       pc.onconnectionstatechange = () => {
         const state = pc.connectionState;
+        if (state === "connected") {
+          setStatus("connected", "Live");
+          return;
+        }
+        if (state === "connecting") {
+          setStatus("connecting", "Connecting");
+          return;
+        }
+        if (state === "failed") {
+          setStatus("error", "Connection Failed");
+        }
         if (state === "failed" || state === "disconnected" || state === "closed") {
           scheduleReconnect();
         }
@@ -798,6 +1058,7 @@ function watchPage(): string {
       });
 
       if (!response.ok) {
+        setStatus("error", "Signaling Error");
         throw new Error("Signaling failed (" + response.status + ")");
       }
 
@@ -812,11 +1073,13 @@ function watchPage(): string {
       }
     };
 
+    fullscreenBtn.addEventListener("click", requestFullscreen);
     document.addEventListener("pointerdown", requestFullscreen, { once: true });
     document.addEventListener("keydown", requestFullscreen, { once: true });
 
     connect().catch((err) => {
       console.error(err);
+      setStatus("error", "Connection Failed");
       scheduleReconnect();
     });
 
@@ -915,7 +1178,7 @@ async function main(): Promise<void> {
           status: 302,
           headers: {
             location: "/watch",
-            "set-cookie": `screenshare_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
+            "set-cookie": `casty_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
           }
         });
       }
