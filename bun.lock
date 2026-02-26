@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "casty",
+      "name": "flitty",
       "dependencies": {
         "commander": "^14.0.3",
         "werift": "^0.22.9",

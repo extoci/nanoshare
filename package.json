@@ -1,13 +1,24 @@
 {
-  "name": "casty",
+  "name": "flitty",
   "version": "0.1.0",
+  "description": "Local screen sharing over WebRTC with a Bun CLI.",
   "type": "module",
-  "private": true,
+  "bin": {
+    "flitty": "src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build:local": "bun build --compile --minify --outfile dist/casty ./src/index.ts",
-    "build:mac": "bun build --compile --minify --target=bun-darwin-arm64 --outfile dist/casty-macos ./src/index.ts",
-    "build:win": "bun build --compile --minify --target=bun-windows-x64 --outfile dist/casty-windows.exe ./src/index.ts"
+    "check:publish": "npm pack --dry-run",
+    "build:local": "bun build --compile --minify --outfile dist/flitty ./src/index.ts",
+    "build:mac": "bun build --compile --minify --target=bun-darwin-arm64 --outfile dist/flitty-macos ./src/index.ts",
+    "build:win": "bun build --compile --minify --target=bun-windows-x64 --outfile dist/flitty-windows.exe ./src/index.ts"
   },
   "dependencies": {
     "commander": "^14.0.3",

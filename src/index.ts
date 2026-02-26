@@ -1,3 +1,5 @@
+#!/usr/bin/env bun
+
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces, platform } from "node:os";
@@ -65,7 +67,7 @@ function parseSourceMode(value: string): SourceMode {
 function parseCliOptions(): CliOptions {
   const program = new Command();
   program
-    .name("casty")
+    .name("flitty")
     .allowExcessArguments(false)
     .option("-p, --port <number>", "HTTP server port", (value) => parsePositiveInteger(value, "port"))
     .option("--pin <pin>", "Access PIN for viewers")
@@ -84,13 +86,13 @@ function getRuntimeConfig(): RuntimeConfig {
   const env = process.env;
 
   return {
-    port: cli.port ?? parsePositiveInteger(env.CASTY_PORT ?? "37777", "CASTY_PORT"),
-    pin: cli.pin ?? env.CASTY_PIN ?? generatePin(),
-    fps: cli.fps ?? parsePositiveInteger(env.CASTY_FPS ?? "30", "CASTY_FPS"),
-    videoBitrate: cli.videoBitrate ?? env.CASTY_VIDEO_BITRATE ?? "14M",
-    useHwaccel: cli.useHwaccel ?? env.CASTY_USE_HWACCEL === "1",
-    source: cli.source ?? parseSourceMode(env.CASTY_SOURCE ?? "screen"),
-    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.CASTY_RTP_PORT ?? "5004", "CASTY_RTP_PORT")
+    port: cli.port ?? parsePositiveInteger(env.FLITTY_PORT ?? "37777", "FLITTY_PORT"),
+    pin: cli.pin ?? env.FLITTY_PIN ?? generatePin(),
+    fps: cli.fps ?? parsePositiveInteger(env.FLITTY_FPS ?? "30", "FLITTY_FPS"),
+    videoBitrate: cli.videoBitrate ?? env.FLITTY_VIDEO_BITRATE ?? "14M",
+    useHwaccel: cli.useHwaccel ?? env.FLITTY_USE_HWACCEL === "1",
+    source: cli.source ?? parseSourceMode(env.FLITTY_SOURCE ?? "screen"),
+    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.FLITTY_RTP_PORT ?? "5004", "FLITTY_RTP_PORT")
   };
 }
 
@@ -158,7 +160,7 @@ function createSession(): { id: string; expiresAt: number } {
 
 function getValidSessionId(req: Request): string | null {
   const cookie = req.headers.get("cookie") ?? "";
-  const sessionId = parseCookies(cookie).get("casty_session");
+  const sessionId = parseCookies(cookie).get("flitty_session");
   if (!sessionId) return null;
 
   const expiresAt = sessions.get(sessionId);
@@ -200,7 +202,7 @@ function paint(text: string, ...codes: string[]): string {
 
 function printCliPanel(lanUrl: string, localUrl: string): void {
   const rows = [
-    { text: "Casty Realtime", tone: "title" as const },
+    { text: "Flitty Realtime", tone: "title" as const },
     { text: "Open URL on same network, enter PIN once.", tone: "hint" as const },
     { text: `LAN URL : ${lanUrl}`, tone: "normal" as const },
     { text: `Local   : ${localUrl}`, tone: "normal" as const },
@@ -337,7 +339,7 @@ function buildCaptureConfig(): CaptureConfig {
   }
 
   if (currentPlatform === "linux") {
-    const display = process.env.CASTY_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
+    const display = process.env.FLITTY_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
     return {
       source: `Linux x11grab ${display}`,
       ffmpegInputArgs: ["-f", "x11grab", "-framerate", String(FPS), "-i", display]
@@ -628,7 +630,7 @@ function loginPage(errorText?: string): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Casty</title>
+  <title>Flitty</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -766,7 +768,7 @@ function loginPage(errorText?: string): string {
 </head>
 <body>
   <main class="panel">
-    <div class="badge">Casty / Access Gateway</div>
+    <div class="badge">Flitty / Access Gateway</div>
     <h1>Enter Access PIN</h1>
     <p>Use the 6-digit code from the host machine to unlock this low-latency screen stream.</p>
     ${errorBanner}
@@ -775,7 +777,7 @@ function loginPage(errorText?: string): string {
       <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required autofocus />
       <button type="submit">Open Live Feed</button>
     </form>
-    <div class="hint"><a href="https://github.com/extoci/casty" target="_blank" rel="noreferrer noopener">View Source on GitHub</a></div>
+    <div class="hint"><a href="https://github.com/extoci/flitty" target="_blank" rel="noreferrer noopener">View Source on GitHub</a></div>
   </main>
 </body>
 </html>`;
@@ -787,7 +789,7 @@ function watchPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Watching Live Screen</title>
+  <title>Flitty Live Screen</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -943,7 +945,7 @@ function watchPage(): string {
 <body>
   <main class="frame">
     <header class="chrome">
-      <div class="id">Casty / Viewer</div>
+      <div class="id">Flitty / Viewer</div>
       <div class="status">
         <span id="statusDot" class="dot connecting"></span>
         <span id="statusText">Connecting</span>
@@ -1206,7 +1208,7 @@ async function main(): Promise<void> {
           status: 302,
           headers: {
             location: "/watch",
-            "set-cookie": `casty_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
+            "set-cookie": `flitty_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
           }
         });
       }
