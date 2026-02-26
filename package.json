@@ -2,6 +2,7 @@
   "name": "nanoshare",
   "version": "0.1.0",
   "description": "Local screen sharing over WebRTC with a Bun CLI.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "nanoshare": "src/index.ts"
