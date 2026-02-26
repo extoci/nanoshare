@@ -1,13 +1,13 @@
-# flitty – local screen sharing, as simple as it gets
+# nanoshare – local screen sharing, as simple as it gets
 
 you shouldn't have to mess with vnc, rdp or ssh to view your laptop's screen on your computer (or any other device on your network).
 
 ## usage
 
-run flitty using [bun](https://bun.com):
+run nanoshare using [bun](https://bun.com):
 
 ```bash
-bunx flitty
+bunx nanoshare
 ```
 
 macos will ask for permission to access your screen, and you might have to restart your terminal before the permission is granted by the os.
@@ -23,7 +23,7 @@ this will obviously require bun.
 
 ## features
 
-`flitty` runs on port `37777` by default, at **30fps** with **14M** video bitrate. you can change settings by passing flags when running `bunx flitty`.
+`nanoshare` runs on port `37777` by default, at **30fps** with **14M** video bitrate. you can change settings by passing flags when running `bunx nanoshare`.
 
 - `--port <number>` – change the port to listen on
 - `--fps <number>` – change the framerate
@@ -38,49 +38,49 @@ this will obviously require bun.
 default:
 
 ```bash
-bunx flitty
+bunx nanoshare
 ```
 
 custom port + pin:
 
 ```bash
-bunx flitty --port 3000 --pin 123456
+bunx nanoshare --port 3000 --pin 123456
 ```
 
 use a test source (great for debugging without sharing your actual screen):
 
 ```bash
-bunx flitty --source testsrc
+bunx nanoshare --source testsrc
 ```
 
 macos hardware encoding:
 
 ```bash
-bunx flitty --use-hwaccel
+bunx nanoshare --use-hwaccel
 ```
 
 ## environment variables
 
 if you prefer env vars over cli flags:
 
-- `FLITTY_PORT` (default: `37777`)
-- `FLITTY_PIN` (default: random 6-digit pin)
-- `FLITTY_FPS` (default: `30`)
-- `FLITTY_VIDEO_BITRATE` (default: `14M`)
-- `FLITTY_USE_HWACCEL=1` to enable hw acceleration on macos
-- `FLITTY_SOURCE=screen|testsrc` (default: `screen`)
-- `FLITTY_RTP_PORT` (default: `5004`)
-- `FLITTY_DISPLAY` (linux only, optional override for X11 display)
+- `NANOSHARE_PORT` (default: `37777`)
+- `NANOSHARE_PIN` (default: random 6-digit pin)
+- `NANOSHARE_FPS` (default: `30`)
+- `NANOSHARE_VIDEO_BITRATE` (default: `14M`)
+- `NANOSHARE_USE_HWACCEL=1` to enable hw acceleration on macos
+- `NANOSHARE_SOURCE=screen|testsrc` (default: `screen`)
+- `NANOSHARE_RTP_PORT` (default: `5004`)
+- `NANOSHARE_DISPLAY` (linux only, optional override for X11 display)
 
 example:
 
 ```bash
-FLITTY_PORT=3000 FLITTY_FPS=60 FLITTY_VIDEO_BITRATE=8M bunx flitty
+NANOSHARE_PORT=3000 NANOSHARE_FPS=60 NANOSHARE_VIDEO_BITRATE=8M bunx nanoshare
 ```
 
 ## what you'll see
 
-when flitty starts, it prints:
+when nanoshare starts, it prints:
 
 - local url (for same machine)
 - lan url (for other devices on your network)
@@ -97,7 +97,7 @@ open the url on another device, enter the pin once, and you're in.
 - viewer can't connect  
   make sure both devices are on the same lan and your firewall allows the selected port. if the port is in use, try passing a different one with `--port <number>`.
 - linux black screen  
-  check that `FLITTY_DISPLAY` (or system `DISPLAY`) is set correctly (for example `:0.0`).
+  check that `NANOSHARE_DISPLAY` (or system `DISPLAY`) is set correctly (for example `:0.0`).
 
 ## acknowledgements
 

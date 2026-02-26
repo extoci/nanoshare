@@ -67,7 +67,7 @@ function parseSourceMode(value: string): SourceMode {
 function parseCliOptions(): CliOptions {
   const program = new Command();
   program
-    .name("flitty")
+    .name("nanoshare")
     .allowExcessArguments(false)
     .option("-p, --port <number>", "HTTP server port", (value) => parsePositiveInteger(value, "port"))
     .option("--pin <pin>", "Access PIN for viewers")
@@ -86,13 +86,13 @@ function getRuntimeConfig(): RuntimeConfig {
   const env = process.env;
 
   return {
-    port: cli.port ?? parsePositiveInteger(env.FLITTY_PORT ?? "37777", "FLITTY_PORT"),
-    pin: cli.pin ?? env.FLITTY_PIN ?? generatePin(),
-    fps: cli.fps ?? parsePositiveInteger(env.FLITTY_FPS ?? "30", "FLITTY_FPS"),
-    videoBitrate: cli.videoBitrate ?? env.FLITTY_VIDEO_BITRATE ?? "14M",
-    useHwaccel: cli.useHwaccel ?? env.FLITTY_USE_HWACCEL === "1",
-    source: cli.source ?? parseSourceMode(env.FLITTY_SOURCE ?? "screen"),
-    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.FLITTY_RTP_PORT ?? "5004", "FLITTY_RTP_PORT")
+    port: cli.port ?? parsePositiveInteger(env.NANOSHARE_PORT ?? "37777", "NANOSHARE_PORT"),
+    pin: cli.pin ?? env.NANOSHARE_PIN ?? generatePin(),
+    fps: cli.fps ?? parsePositiveInteger(env.NANOSHARE_FPS ?? "30", "NANOSHARE_FPS"),
+    videoBitrate: cli.videoBitrate ?? env.NANOSHARE_VIDEO_BITRATE ?? "14M",
+    useHwaccel: cli.useHwaccel ?? env.NANOSHARE_USE_HWACCEL === "1",
+    source: cli.source ?? parseSourceMode(env.NANOSHARE_SOURCE ?? "screen"),
+    rtpPort: cli.rtpPort ?? parsePositiveInteger(env.NANOSHARE_RTP_PORT ?? "5004", "NANOSHARE_RTP_PORT")
   };
 }
 
@@ -160,7 +160,7 @@ function createSession(): { id: string; expiresAt: number } {
 
 function getValidSessionId(req: Request): string | null {
   const cookie = req.headers.get("cookie") ?? "";
-  const sessionId = parseCookies(cookie).get("flitty_session");
+  const sessionId = parseCookies(cookie).get("nanoshare_session");
   if (!sessionId) return null;
 
   const expiresAt = sessions.get(sessionId);
@@ -202,7 +202,7 @@ function paint(text: string, ...codes: string[]): string {
 
 function printCliPanel(lanUrl: string, localUrl: string): void {
   const rows = [
-    { text: "Flitty Realtime", tone: "title" as const },
+    { text: "Nanoshare Realtime", tone: "title" as const },
     { text: "Open URL on same network, enter PIN once.", tone: "hint" as const },
     { text: `LAN URL : ${lanUrl}`, tone: "normal" as const },
     { text: `Local   : ${localUrl}`, tone: "normal" as const },
@@ -339,7 +339,7 @@ function buildCaptureConfig(): CaptureConfig {
   }
 
   if (currentPlatform === "linux") {
-    const display = process.env.FLITTY_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
+    const display = process.env.NANOSHARE_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
     return {
       source: `Linux x11grab ${display}`,
       ffmpegInputArgs: ["-f", "x11grab", "-framerate", String(FPS), "-i", display]
@@ -630,7 +630,7 @@ function loginPage(errorText?: string): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Flitty</title>
+  <title>Nanoshare</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -768,7 +768,7 @@ function loginPage(errorText?: string): string {
 </head>
 <body>
   <main class="panel">
-    <div class="badge">Flitty / Access Gateway</div>
+    <div class="badge">Nanoshare / Access Gateway</div>
     <h1>Enter Access PIN</h1>
     <p>Use the 6-digit code from the host machine to unlock this low-latency screen stream.</p>
     ${errorBanner}
@@ -777,7 +777,7 @@ function loginPage(errorText?: string): string {
       <input id="pin" name="pin" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required autofocus />
       <button type="submit">Open Live Feed</button>
     </form>
-    <div class="hint"><a href="https://github.com/extoci/flitty" target="_blank" rel="noreferrer noopener">View Source on GitHub</a></div>
+    <div class="hint"><a href="https://github.com/extoci/nanoshare" target="_blank" rel="noreferrer noopener">View Source on GitHub</a></div>
   </main>
 </body>
 </html>`;
@@ -789,7 +789,7 @@ function watchPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Flitty Live Screen</title>
+  <title>Nanoshare Live Screen</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
@@ -945,7 +945,7 @@ function watchPage(): string {
 <body>
   <main class="frame">
     <header class="chrome">
-      <div class="id">Flitty / Viewer</div>
+      <div class="id">Nanoshare / Viewer</div>
       <div class="status">
         <span id="statusDot" class="dot connecting"></span>
         <span id="statusText">Connecting</span>
@@ -1208,7 +1208,7 @@ async function main(): Promise<void> {
           status: 302,
           headers: {
             location: "/watch",
-            "set-cookie": `flitty_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
+            "set-cookie": `nanoshare_session=${id}; Path=/; HttpOnly; SameSite=Lax; Expires=${expires}`
           }
         });
       }
