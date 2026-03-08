@@ -31,6 +31,9 @@ this will obviously require bun.
 - `--use-hwaccel` – enable hardware acceleration on macOS
 - `--source <screen|testsrc>` – use a test pattern or screen capture
 - `--rtp-port <number>` – change the local port for ffmpeg → webrtc ingress
+- `--audio` – enable system audio streaming (best effort)
+- `--audio-device <value>` – override system audio input device (platform-specific)
+- `--audio-rtp-port <number>` – change local audio RTP ingress (default `5006`)
 - `--pin <pin>` – change the pin to require to access the live stream
 
 ## quick examples
@@ -59,6 +62,18 @@ macos hardware encoding:
 bunx nanoshare --use-hwaccel
 ```
 
+start with system audio enabled:
+
+```bash
+bunx nanoshare --audio
+```
+
+start with explicit audio device:
+
+```bash
+bunx nanoshare --audio --audio-device "BlackHole 2ch"
+```
+
 ## environment variables
 
 if you prefer env vars over cli flags:
@@ -70,6 +85,9 @@ if you prefer env vars over cli flags:
 - `NANOSHARE_USE_HWACCEL=1` to enable hw acceleration on macos
 - `NANOSHARE_SOURCE=screen|testsrc` (default: `screen`)
 - `NANOSHARE_RTP_PORT` (default: `5004`)
+- `NANOSHARE_AUDIO=1` to enable system audio on startup
+- `NANOSHARE_AUDIO_DEVICE` (optional platform-specific audio input device)
+- `NANOSHARE_AUDIO_RTP_PORT` (default: `5006`)
 - `NANOSHARE_DISPLAY` (linux only, optional override for X11 display)
 
 example:
@@ -86,6 +104,11 @@ when nanoshare starts, it prints:
 - lan url (for other devices on your network)
 - a 6-digit pin
 
+runtime controls:
+
+- `Ctrl+C` to stop
+- press `a` in the host terminal (tty mode) to toggle audio on/off; viewers auto-reconnect
+
 open the url on another device, enter the pin once, and you're in.
 
 ## troubleshooting
@@ -98,6 +121,10 @@ open the url on another device, enter the pin once, and you're in.
   make sure both devices are on the same lan and your firewall allows the selected port. if the port is in use, try passing a different one with `--port <number>`.
 - linux black screen  
   check that `NANOSHARE_DISPLAY` (or system `DISPLAY`) is set correctly (for example `:0.0`).
+- no audio on macos  
+  system audio usually needs a loopback device (for example BlackHole/Loopback/Soundflower). install one and pass `--audio-device` if auto-detection doesn't find it.
+- no audio on windows/linux  
+  pass an explicit `--audio-device` and verify ffmpeg can read it. nanoshare will continue in video-only mode if audio setup fails.
 
 ## acknowledgements
 
