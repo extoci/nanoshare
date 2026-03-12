@@ -190,6 +190,16 @@ export function watchPage(): string {
     let reconnectTimer = null;
     let audioBlocked = false;
 
+    const configureReceiverForLowLatency = (receiver) => {
+      if (!receiver) return;
+      if ("playoutDelayHint" in receiver) {
+        receiver.playoutDelayHint = 0;
+      }
+      if ("jitterBufferTarget" in receiver) {
+        receiver.jitterBufferTarget = 0;
+      }
+    };
+
     const setStatus = (state, label) => {
       statusText.textContent = label;
       statusDot.className = "dot " + state;
@@ -275,8 +285,10 @@ export function watchPage(): string {
       peer = pc;
       pc.addTransceiver("video", { direction: "recvonly" });
       pc.addTransceiver("audio", { direction: "recvonly" });
+      pc.getReceivers().forEach(configureReceiverForLowLatency);
 
       pc.ontrack = (event) => {
+        configureReceiverForLowLatency(event.receiver);
         const stream = event.streams && event.streams[0]
           ? event.streams[0]
           : new MediaStream([event.track]);

@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { platform } from "node:os";
 import type { AudioCaptureConfig, RuntimeConfig, VideoCaptureConfig } from "./types";
 
+const VIDEO_INPUT_QUEUE_SIZE = "64";
+const AUDIO_INPUT_QUEUE_SIZE = "64";
+
 function detectMacScreenInputIndex(): number {
   const probe = spawnSync("ffmpeg", ["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""], {
     encoding: "utf8"
@@ -75,6 +78,8 @@ export function buildVideoCaptureConfig(config: RuntimeConfig): VideoCaptureConf
       source: `FFmpeg lavfi testsrc (${config.fps}fps)`,
       ffmpegInputArgs: [
         "-re",
+        "-thread_queue_size",
+        VIDEO_INPUT_QUEUE_SIZE,
         "-f",
         "lavfi",
         "-i",
@@ -90,6 +95,8 @@ export function buildVideoCaptureConfig(config: RuntimeConfig): VideoCaptureConf
     return {
       source: `macOS avfoundation screen index ${screenIndex}`,
       ffmpegInputArgs: [
+        "-thread_queue_size",
+        VIDEO_INPUT_QUEUE_SIZE,
         "-f",
         "avfoundation",
         "-framerate",
@@ -111,6 +118,8 @@ export function buildVideoCaptureConfig(config: RuntimeConfig): VideoCaptureConf
         ? `Windows gdigrab primary screen ${bounds.width}x${bounds.height} @ (${bounds.x},${bounds.y})`
         : "Windows gdigrab desktop",
       ffmpegInputArgs: [
+        "-thread_queue_size",
+        VIDEO_INPUT_QUEUE_SIZE,
         "-f",
         "gdigrab",
         "-framerate",
@@ -137,7 +146,16 @@ export function buildVideoCaptureConfig(config: RuntimeConfig): VideoCaptureConf
     const display = process.env.NANOSHARE_DISPLAY ?? process.env.DISPLAY ?? ":0.0";
     return {
       source: `Linux x11grab ${display}`,
-      ffmpegInputArgs: ["-f", "x11grab", "-framerate", String(config.fps), "-i", display]
+      ffmpegInputArgs: [
+        "-thread_queue_size",
+        VIDEO_INPUT_QUEUE_SIZE,
+        "-f",
+        "x11grab",
+        "-framerate",
+        String(config.fps),
+        "-i",
+        display
+      ]
     };
   }
 
@@ -152,7 +170,14 @@ export function buildAudioCaptureConfig(config: RuntimeConfig): AudioCaptureConf
     if (audioDevice) {
       return {
         source: `macOS avfoundation audio device ${audioDevice}`,
-        ffmpegInputArgs: ["-f", "avfoundation", "-i", `:${audioDevice}`]
+        ffmpegInputArgs: [
+          "-thread_queue_size",
+          AUDIO_INPUT_QUEUE_SIZE,
+          "-f",
+          "avfoundation",
+          "-i",
+          `:${audioDevice}`
+        ]
       };
     }
 
@@ -166,7 +191,14 @@ export function buildAudioCaptureConfig(config: RuntimeConfig): AudioCaptureConf
 
     return {
       source: `macOS avfoundation ${preferred.name} (#${preferred.index})`,
-      ffmpegInputArgs: ["-f", "avfoundation", "-i", `:${preferred.index}`]
+      ffmpegInputArgs: [
+        "-thread_queue_size",
+        AUDIO_INPUT_QUEUE_SIZE,
+        "-f",
+        "avfoundation",
+        "-i",
+        `:${preferred.index}`
+      ]
     };
   }
 
@@ -174,7 +206,7 @@ export function buildAudioCaptureConfig(config: RuntimeConfig): AudioCaptureConf
     const device = audioDevice || "default";
     return {
       source: `Windows WASAPI ${device}`,
-      ffmpegInputArgs: ["-f", "wasapi", "-thread_queue_size", "512", "-loopback", "1", "-i", device]
+      ffmpegInputArgs: ["-f", "wasapi", "-thread_queue_size", AUDIO_INPUT_QUEUE_SIZE, "-loopback", "1", "-i", device]
     };
   }
 
@@ -182,7 +214,7 @@ export function buildAudioCaptureConfig(config: RuntimeConfig): AudioCaptureConf
     const device = audioDevice || "default";
     return {
       source: `Linux PulseAudio ${device}`,
-      ffmpegInputArgs: ["-f", "pulse", "-thread_queue_size", "512", "-i", device]
+      ffmpegInputArgs: ["-f", "pulse", "-thread_queue_size", AUDIO_INPUT_QUEUE_SIZE, "-i", device]
     };
   }
 
